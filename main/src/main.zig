@@ -42,6 +42,10 @@ const freertos = @cImport({
     @cInclude("freertos/task.h");
 });
 
+fn min(a: u32, b: u32) u32 {
+    return if (a > b) b else a;
+}
+
 const Candle = struct {
     gpio: u32 = 0,
     seed: u32 = 0,
@@ -74,15 +78,13 @@ const Candle = struct {
         } else {
             self.seed = (self.seed >> 1) ^ 0x7ffff159;
         }
-        return self.seed & 0xff;
+        return self.seed;
     }
 
     pub fn tick(self: *Candle) void {
-        var poop = self.lfsr32() & 0x1f;
+        const poop = min(self.lfsr32() & 0x1f, 15);
 
-        if (poop > 15) poop = 15;
-
-        if (poop > 4) {
+        if (poop > 3) {
             _ = esp.ledc_set_duty(esp.LEDC_LOW_SPEED_MODE, self.channel, poop * 8191 / 15);
             _ = esp.ledc_update_duty(esp.LEDC_LOW_SPEED_MODE, self.channel);
         }
@@ -103,17 +105,23 @@ fn setup_timer(timer: esp.ledc_timer_t, freq_hz: u32) c_int {
 export fn app_main() void {
     _ = setup_timer(esp.LEDC_TIMER_0, 440);
 
-    var c0 = Candle.init(10, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_0);
-    c0.tick();
-    c0.tick();
-    var c1 = Candle.init(11, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_1);
+    var c0 = Candle.init(8, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_0);
+    var c1 = Candle.init(9, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_1);
+    var c2 = Candle.init(10, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_2);
+    var c3 = Candle.init(11, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_3);
+    var c4 = Candle.init(12, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_4);
+
     c1.tick();
-    var c2 = Candle.init(12, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_2);
+    c2.tick();
+    c2.tick();
+    c3.tick();
 
     while (true) {
         c0.tick();
         c1.tick();
         c2.tick();
+        c3.tick();
+        c4.tick();
         freertos.vTaskDelay(50 / freertos.portTICK_PERIOD_MS);
     }
 }
