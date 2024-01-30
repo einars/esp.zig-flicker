@@ -6,10 +6,9 @@ const esp = struct {
         @cInclude("esp_err.h");
         @cInclude("esp_log.h");
 
-        // zig opaque struct-in-struct not supported -> override manually
+        // zig opaque struct-in-struct not supported -> rewrite extern structs and calls in zig by hand
         // @cInclude("driver/ledc.h");
         @cInclude("hal/ledc_types.h");
-        @cInclude("driver/gpio.h");
     });
 
     const TimerConfig = extern struct {
@@ -43,69 +42,78 @@ const freertos = @cImport({
     @cInclude("freertos/task.h");
 });
 
-pub const std_options = struct {
-    pub fn logFn(comptime message_level: std.log.Level, comptime scope: @Type(.EnumLiteral), comptime format: []const u8, args: anytype) void {
-        const color = switch (message_level) {
-            .err => "\x1b[31m", // red
-            .warn => "\x1b[33m", // yellow
-            .info => "\x1b[32m", // green
-            .debug => "",
+const Candle = struct {
+    gpio: u32 = 0,
+    seed: u32 = 0,
+    channel: esp.ledc_channel_t,
+    pub fn init(gpio: u32, timer: esp.ledc_timer_t, channel: esp.ledc_channel_t) Candle {
+        const c = esp.ChannelConfig{
+            .gpio_num = gpio,
+            .speed_mode = esp.LEDC_LOW_SPEED_MODE,
+            .channel = channel,
+            .intr_type = esp.LEDC_INTR_DISABLE,
+            .timer_sel = timer,
+            .duty = 0,
+            .hpoint = 0,
+            .flags = 0,
+        };
+        _ = esp.ledc_channel_config(&c);
+
+        var self: Candle = .{
+            .gpio = gpio,
+            .seed = 0,
+            .channel = channel,
         };
 
-        const esp_level = switch (message_level) {
-            .err => esp.ESP_LOG_ERROR,
-            .warn => esp.ESP_LOG_WARN,
-            .info => esp.ESP_LOG_INFO,
-            .debug => esp.ESP_LOG_DEBUG,
-        };
+        return self;
+    }
 
-        const prefix = switch (message_level) {
-            .err => "E",
-            .warn => "W",
-            .info => "I",
-            .debug => "D",
-        };
+    pub fn lfsr32(self: *Candle) u32 {
+        if (self.seed & 1 > 0) {
+            self.seed = (self.seed >> 1);
+        } else {
+            self.seed = (self.seed >> 1) ^ 0x7ffff159;
+        }
+        return self.seed & 0xff;
+    }
 
-        const fmt = std.fmt.comptimePrint(color ++ prefix ++ " (%u): {s}\x1b[0m\n", .{format});
-        const timestamp = esp.esp_log_timestamp();
-        @call(.auto, esp.esp_log_write, .{ esp_level, @tagName(scope), fmt, timestamp } ++ args);
+    pub fn tick(self: *Candle) void {
+        var poop = self.lfsr32() & 0x1f;
+
+        if (poop > 15) poop = 15;
+
+        if (poop > 4) {
+            _ = esp.ledc_set_duty(esp.LEDC_LOW_SPEED_MODE, self.channel, poop * 8191 / 15);
+            _ = esp.ledc_update_duty(esp.LEDC_LOW_SPEED_MODE, self.channel);
+        }
     }
 };
 
-const LED_GPIO_0: u32 = 11;
-
-export fn app_main() void {
-    _ = esp.gpio_reset_pin(LED_GPIO_0);
-    _ = esp.gpio_set_direction(LED_GPIO_0, esp.GPIO_MODE_OUTPUT);
-
-    const timer = esp.TimerConfig{
+fn setup_timer(timer: esp.ledc_timer_t, freq_hz: u32) c_int {
+    const t = esp.TimerConfig{
         .speed_mode = esp.LEDC_LOW_SPEED_MODE,
-        .timer_num = esp.LEDC_TIMER_0,
+        .timer_num = timer,
         .duty_resolution = esp.LEDC_TIMER_13_BIT,
-        .freq_hz = 440,
+        .freq_hz = freq_hz,
         .clk_cfg = esp.LEDC_AUTO_CLK,
     };
-    _ = esp.ledc_timer_config(&timer);
+    return esp.ledc_timer_config(&t);
+}
 
-    const c0 = esp.ChannelConfig{
-        .gpio_num = LED_GPIO_0,
-        .speed_mode = esp.LEDC_LOW_SPEED_MODE,
-        .channel = esp.LEDC_CHANNEL_0,
-        .intr_type = esp.LEDC_INTR_DISABLE,
-        .timer_sel = esp.LEDC_TIMER_0,
-        .duty = 0,
-        .hpoint = 0,
-        .flags = 0,
-    };
+export fn app_main() void {
+    _ = setup_timer(esp.LEDC_TIMER_0, 440);
 
-    _ = esp.ledc_channel_config(&c0);
+    var c0 = Candle.init(10, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_0);
+    c0.tick();
+    c0.tick();
+    var c1 = Candle.init(11, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_1);
+    c1.tick();
+    var c2 = Candle.init(12, esp.LEDC_TIMER_0, esp.LEDC_CHANNEL_2);
 
     while (true) {
-        _ = esp.ledc_set_duty(esp.LEDC_LOW_SPEED_MODE, esp.LEDC_CHANNEL_0, 100 * 8191 / 100);
-        _ = esp.ledc_update_duty(esp.LEDC_LOW_SPEED_MODE, esp.LEDC_CHANNEL_0);
-        freertos.vTaskDelay(500 / freertos.portTICK_PERIOD_MS);
-        _ = esp.ledc_set_duty(esp.LEDC_LOW_SPEED_MODE, esp.LEDC_CHANNEL_0, 20 * 8191 / 100);
-        _ = esp.ledc_update_duty(esp.LEDC_LOW_SPEED_MODE, esp.LEDC_CHANNEL_0);
-        freertos.vTaskDelay(500 / freertos.portTICK_PERIOD_MS);
+        c0.tick();
+        c1.tick();
+        c2.tick();
+        freertos.vTaskDelay(50 / freertos.portTICK_PERIOD_MS);
     }
 }
